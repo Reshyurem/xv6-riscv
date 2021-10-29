@@ -99,8 +99,32 @@ sys_uptime(void)
 }
 
 uint64
-sys_strace(void)
+sys_trace()
 {
-  // strace();
+  int mask;
+  if(argint(0, &mask) < 0)
+    return -1;
+  myproc()->trace_mask = mask;
+  return 0;
+}
+
+uint64
+sys_set_priority()
+{
+  int priority, pid;
+  if(argint(0, &priority) < 0)
+    return -1;
+  if(argint(1, &pid) < 0)
+    return -1;
+  for(struct proc *p = proc; p < &proc[NPROC]; p++)
+  {
+    acquire(&p->lock);
+    if(p->pid == pid && priority >= 0 && priority <= 100)
+    {
+      p->priority = priority;
+      return 0;
+    }
+    release(&p->lock);
+  }
   return 0;
 }

@@ -119,8 +119,15 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->priority = 60;
+  p->no_of_runs = 0;
+  p->create_time = ticks;
+  p->start_time = ticks;
 
   // Allocate a trapframe page.
+  #ifdef FCFS
+  p->create_time = ticks;
+  #endif
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
@@ -292,6 +299,9 @@ fork(void)
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
+  // copy traced syscalls
+  np->trace_mask = p->trace_mask;
+
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
@@ -427,6 +437,18 @@ wait(uint64 addr)
   }
 }
 
+void
+update_runtime(void) 
+{
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNING) {
+      p->run_time++;
+    }
+    release(&p->lock);
+  }
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -443,8 +465,9 @@ scheduler(void)
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
+    // #ifdef DEFAULT
     intr_on();
-
+    #ifdef RR
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
@@ -461,8 +484,84 @@ scheduler(void)
       }
       release(&p->lock);
     }
+    #endif
+    #ifdef FCFS
+    struct proc* firstComeProc = 0;
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE)
+            if (firstComeProc == 0 || firstComeProc->create_time > p->create_time)
+            {
+                if (firstComeProc)
+                    release(&firstComeProc->lock);
+
+                firstComeProc = p;
+                continue;
+            }
+        release(&p->lock);
+    }
+
+    if (firstComeProc)
+    {
+        /*acquire(&firstComeProc->lock);*/
+        firstComeProc->state = RUNNING;
+        c->proc = firstComeProc;
+        swtch(&c->context, &firstComeProc->context);
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        release(&firstComeProc->lock);
+    }
+    #endif
+    #ifdef PBS
+    struct proc* highestPriority = 0;
+    int dynamicPriority = 101, processDynamicPriority = 0;
+    int nice;
+    int tmp;
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->no_of_runs == 0)
+      {
+        processDynamicPriority = p->priority;
+      }
+      else
+      {
+        nice = ((p->create_time - p->start_time - p->run_time) * 10 ) / (p->create_time - p->start_time);
+        tmp = p->priority - nice + 5;
+        tmp = (tmp > 100) ? 100 : tmp;
+        processDynamicPriority = (tmp < 0) ? 0 : tmp;
+      }
+      if(p->state == RUNNABLE)
+        if (highestPriority == 0 || dynamicPriority > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs > p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time > p->create_time))))       
+        {
+            if (highestPriority)
+                release(&highestPriority->lock);
+
+            highestPriority = p;
+            dynamicPriority = processDynamicPriority;
+            continue;
+        }
+      release(&p->lock);
+    }
+    if (highestPriority)
+    {
+        /*acquire(&highestPriority->lock);*/
+        highestPriority->state = RUNNING;
+        highestPriority->no_of_runs++;
+        highestPriority->start_time = ticks;
+        highestPriority->run_time = 0;
+        c->proc = highestPriority;
+        swtch(&c->context, &highestPriority->context);
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        release(&highestPriority->lock);
+    }
+    #endif
   }
 }
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -633,15 +732,16 @@ void
 procdump(void)
 {
   static char *states[] = {
-  [UNUSED]    "unused",
-  [SLEEPING]  "sleep ",
-  [RUNNABLE]  "runble",
-  [RUNNING]   "run   ",
-  [ZOMBIE]    "zombie"
+  [UNUSED]    " unused ",
+  [SLEEPING]  "sleeping",
+  [RUNNABLE]  " runble ",
+  [RUNNING]   "running ",
+  [ZOMBIE]    " zombie "
   };
   struct proc *p;
   char *state;
 
+  // #ifdef RR
   printf("\n");
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
@@ -653,4 +753,19 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+  // #endif
+
+  // #ifdef PBS
+  // printf("\nPID\tPriority\tState\trtime\twtime\tnrun\n");
+  // for(p = proc; p < &proc[NPROC]; p++){
+  //   if(p->state == UNUSED)
+  //     continue;
+  //   if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+  //     state = states[p->state];
+  //   else
+  //     state = "???";
+  //   printf("%d\t%d\t%s", p->pid, p->priority, state, ticks - p->create_time, p->wait_time, p->no_of_runs);
+  //   printf("\n");
+  // }
+  // #endif
 }

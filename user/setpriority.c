@@ -8,22 +8,14 @@
 int
 main(int argc, char *argv[])
 {
-    int i;
-    char *nargv[MAXARG];
-
     if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
-        fprintf(2, "Usage: %s mask command\n", argv[0]);
+        fprintf(2, "Usage: %s command\n", argv[0]);
         exit(1);
     }
 
-    if (trace(atoi(argv[1])) < 0) {
-        fprintf(2, "%s: trace failed\n", argv[0]);
+    if (set_priority(atoi(argv[1]), atoi(argv[2])) < 0) {
+        fprintf(2, "%s: set_priority failed\n", argv[0]);
         exit(1);
     }
-    
-    for(i = 2; i < argc && i < MAXARG; i++){
-    	nargv[i-2] = argv[i];
-    }
-    exec(nargv[0], nargv);
     exit(0);
 }

@@ -106,4 +106,15 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
   int trace_mask;              // bitmask of tracing events
+
+  // FCFS
+  uint64 create_time;
+  
+  // PBS
+  uint64 priority;
+  uint64 run_time;
+  uint64 start_time;
+  uint64 no_of_runs;
 };
+
+extern struct proc proc[NPROC];
