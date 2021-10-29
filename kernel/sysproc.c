@@ -122,7 +122,6 @@ sys_set_priority()
     if(p->pid == pid && priority >= 0 && priority <= 100)
     {
       p->priority = priority;
-      return 0;
     }
     release(&p->lock);
   }
