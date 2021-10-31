@@ -116,7 +116,6 @@ struct proc {
   uint64 run_time;
   uint64 total_run_time;
   uint64 sleep_time;
-  uint64 start_time;
   uint64 end_time;
   uint64 no_of_runs;
 
@@ -124,7 +123,6 @@ struct proc {
   uint64 level;
   uint64 in_queue;
   uint64 change_queue;
-  uint64 n_run;
   uint64 q_enter;
   uint64 ticks_in_q[NO_OF_Q];
 };

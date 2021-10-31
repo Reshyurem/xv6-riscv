@@ -124,7 +124,6 @@ found:
   p->no_of_runs = 0;
   p->create_time = ticks;
   p->end_time = 0;
-  p->start_time = ticks;
   p->total_run_time = 0;
   p->sleep_time = 0;
   p->run_time = 0;
@@ -536,7 +535,8 @@ scheduler(void)
       tmp = (tmp > 100) ? 100 : tmp;
       processDynamicPriority = (tmp < 0) ? 0 : tmp;
       if(p->state == RUNNABLE)
-        if (highestPriority == 0 || dynamicPriority > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs > p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time < p->create_time))))       
+        if (highestPriority == 0 || dynamicPriority 
+        > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs > p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time < p->create_time))))       
         {
             if (highestPriority)
                 release(&highestPriority->lock);
@@ -552,14 +552,13 @@ scheduler(void)
         /*acquire(&highestPriority->lock);*/
         highestPriority->state = RUNNING;
         highestPriority->no_of_runs++;
-        highestPriority->start_time = ticks;
         highestPriority->run_time = 0;
         highestPriority->sleep_time = 0;
         c->proc = highestPriority;
         swtch(&c->context, &highestPriority->context);
         // Process is done running for now.
         // It should have changed its p->state before coming back.
-        p->nice = ((p->create_time - p->start_time - p->run_time) * 10 ) / (p->create_time - p->start_time);
+        p->nice = ((p->sleep_time) * 10 ) / (p->sleep_time + p->run_time);
         c->proc = 0;
         release(&highestPriority->lock);
     }
@@ -744,7 +743,7 @@ procdump(void)
   static char *states[] = {
   [UNUSED]    " unused ",
   [SLEEPING]  "sleeping",
-  [RUNNABLE]  " runble ",
+  [RUNNABLE]  "runnable",
   [RUNNING]   "running ",
   [ZOMBIE]    " zombie "
   };
@@ -845,117 +844,3 @@ waitx(uint64 addr, uint* rtime, uint* wtime)
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
-
-#ifdef MLFQ
-
-void pushback(Queue *q, struct proc *p)
-{
-    if (!q)
-        panic("Invalid Queue given!\n");
-    if (!p)
-        panic("Invalid Process given!\n");
-
-    if (size(q) == NUMQUEUE) 
-        panic("The Queue is full!\n")
-
-     if (q->beg > 0)
-        for (int i = q->beg; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
-            if (q->q[i] != NULL && q->q[i]->pid == p->pid)
-                return;
-    
-    if (q->beg == -1)
-    {
-        q->q[0] = p;
-        q->beg = q->end = 0;
-    }
-    else if (q->end == NUMQUEUE - 1 && q->beg != 0)
-    {
-        q->end = 0;
-        q->q[0] = p;
-    }
-    else
-    {
-        q->end++;
-        q->q[q->end] = p;
-    }
-}
-
-void deletefront(Queue *q)
-{
-    if (!q)
-        panic("Invalid Queue given!\n");
-
-    if (q->beg == -1)
-        panic("Deleting from empty queue!\n");
-
-    if (q->beg == q->end)
-        q->end = q->beg = -1;
-    else if (q->beg == NUMQUEUE - 1)
-        q->beg = 0;
-    else
-        q->beg++;
-}
-
-void deleteIdx(Queue *q, int idx)
-{
-    if (idx < q->beg || idx > q->end)
-        panic("Invalid idx!\n");
-
-    for (int i = idx; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
-       q->q[i] = q->q[(j + 1) % NUMQUEUE];
-
-    if (q->beg == q->end)
-        q->beg = q->end = -1;
-    else if (q->end == 0 && q->beg > q->end)
-        q->end = NUMQUEUE - 1;
-    else
-        q->end--;
-}
-
-int size(Queue *q)
-{
-    if (q == NULL)
-        panic("Invalid Queue given!\n");
-
-    if (q->beg == -1)
-        return 0;
-    
-    if (q->end >= q->beg)
-        return q->end - q->beg + 1;
-
-    return NUMQUEUE + q->end - q->beg;
-}
-
-void 
-ageproc(void)
-{
-    for (int que = 0; que < MAXQUEUE; que++)
-    {
-        if (size(&mlfq[que]))
-        {
-            Queue *q = &mlfq[que];
-            
-            for (int i = q->beg; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
-            {
-                if (q->q[i] && ticks - q->reset_ticks > AGE)
-                {
-                    if (q->q[i]->queue < 0)
-                        continue;
-                    int newQ = q->q[i]->queue - 1;
-                    if (newQ < 0)
-                        newQ = 0;
-
-                    struct proc *del = mlfq[q->q[i]->queue].q[i];
-                    deleteIdx(&mlfq[q->q[i]->queue], i);
-
-                    del->reset_ticks = ticks;
-                    del->queue = newQ;
-
-                    pushback(&mlfq[newQ], del);
-                }
-            }
-        }
-    }
-}
-
-#endif

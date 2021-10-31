@@ -159,7 +159,7 @@ static uint64 arg_syscall[] = {
 [SYS_close]          1,
 [SYS_trace]          1,
 [SYS_set_priority]   2,
-[SYS_waitx]          2,
+[SYS_waitx]          3,
 };
 
 static char *syscall_names[] = {

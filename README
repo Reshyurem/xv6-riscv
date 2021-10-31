@@ -1,5 +1,381 @@
+# XV6-RISCV
+
+## Running XV6-RISCV
+
+Extract the files from the tar and open the directory
+
+We can now run the XV6-RISCV OS with the following command:
+
+```sh
+make qemu
+```
+
+This will build the XV6-RISCV OS using the round robin scheduler and run it.
+
+If you want to use a different scheduler, run
+
+```sh
+make qemu SCHEDULER=$(your_scheduler)
+```
+
+where `your_scheduler` is the name of the scheduler you want to use. It can be `RR` for the round robin scheduler, `FCFS` for the first come first serve scheduler, or `PBS` for the shortest remaining time scheduler.
+
+### Spec 1
+
+Following the hints provided, the changes made are as listed:
+
+-   Added a function `sys_trace` in `sysproc.c` which assigns the mask
+
+    ```c
+    uint64
+    sys_trace()
+    {
+    int mask;
+    if(argint(0, &mask) < 0)
+    return -1;
+    myproc()->trace_mask = mask;
+    return 0;
+    }
+    ```
+
+-   Created a user implementation for strace by adding a new file `strace.c` and also added it in the `Makefile`
+
+    ```c
+    #include "kernel/types.h"
+    #include "kernel/stat.h"
+    #include "kernel/param.h"
+    #include "user/user.h"
+    #include "kernel/fs.h"
+    #include "kernel/fcntl.h"
+
+    int
+    main(int argc, char *argv[])
+    {
+        int i;
+        char *nargv[MAXARG];
+
+        if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
+            fprintf(2, "Usage: %s mask command\n", argv[0]);
+            exit(1);
+        }
+
+        if (trace(atoi(argv[1])) < 0) {
+            fprintf(2, "%s: trace failed\n", argv[0]);
+            exit(1);
+        }
+
+        for(i = 2; i < argc && i < MAXARG; i++){
+        	nargv[i-2] = argv[i];
+        }
+        exec(nargv[0], nargv);
+        exit(0);
+    }
+    ```
+
+-   Added `trace_mask` as an attribute of the proc struct in `proc.h` and made sure the value was copied from parent to child during forks in `fork()` which is present in `proc.c`
+
+-   Arrays containing the number of parameters a syscall takes and its name, `arg_syscall[]` and `syscall_names[]`
+
+-   To create the output on the terminal, `syscall()` in `syscall.c` was edited to print the values required if mask was set
+
+    ```c
+    int arg[7];
+
+    void
+    syscall(void)
+    {
+        int num;
+        struct proc *p = myproc();
+
+        num = p->trapframe->a7;
+        if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+            for(int i = 0; i < arg_syscall[num]; i++)
+            {
+              arg[i] = argraw(i);
+            }
+            p->trapframe->a0 = syscalls[num]();
+            if(p->trace_mask & 1 << num)
+            { 
+              printf("%d: syscall %s (", p->pid, syscall_names[num]);
+              for(int i = 0; i < arg_syscall[num]; i++)
+              {
+                printf("%d", arg[i]);
+                if(i != arg_syscall[num] - 1)
+                  printf(" ");
+              }
+              printf(") -> %d\n", p->trapframe->a0);
+            }
+        } else {
+            printf("%d %s: unknown sys call %d\n",
+                    p->pid, p->name, num);
+            p->trapframe->a0 = -1;
+        }
+    }
+
+    ```
+
+### Spec 2
+
+#### **FCFS**
+
+-   Added the attribute `create_time` to `struct proc` in `proc.h`
+-   Initialised `create_time` in `allocproc`
+
+-   Added code in `Makefile` so that scheduler specific code is run
+
+    ```makefile
+    ifndef SCHEDULER
+        SCHEDULER:=RR
+    endif
+
+    CFLAGS+="-D$(SCHEDULER)"
+    ```
+
+    If `SCHEDULER` is defined during compilation, the scheduler specific code is run. If not, the round robin scheduler is run.
+
+-   Made the existing RR code in `scheduler` in `proc.c` specific to `RR`
+-   Added the scheduling functionality in `scheduler` in `proc.c` specific to `FCFS`
+
+    ```c
+    #ifdef FCFS
+        struct proc* firstComeProc = 0;
+        for (p = proc; p < &proc[NPROC]; p++)
+        {
+            acquire(&p->lock);
+            if (p->state == RUNNABLE)
+                if (firstComeProc == 0 || firstComeProc->create_time > p->create_time)
+                {
+                    if (firstComeProc)
+                        release(&firstComeProc->lock);
+
+                    firstComeProc = p;
+                    continue;
+                }
+            release(&p->lock);
+        }
+
+        if (firstComeProc)
+        {
+            /*acquire(&firstComeProc->lock);*/
+            firstComeProc->state = RUNNING;
+            c->proc = firstComeProc;
+            swtch(&c->context, &firstComeProc->context);
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            c->proc = 0;
+            release(&firstComeProc->lock);
+        }
+        #endif
+    ```
+
+    Here, we first go through all the processes and compare their `create_time`. Which ever process has the least `create_time` is the first process to run as it is the first to be created.
+
+-   Disabled `yield()` in trap.c since FCFS is a non-preemptive scheduler.
+
+#### **PBS**
+
+-   Added attributes `priority`, `nice`, `run_time`, `sleep_time` in `struct proc` in `proc.h`
+-   In `allocproc()` in `proc.c`, gave the priority a static value of 60.
+-   Add the scheduling functionality for PBS
+
+    ```c
+    #ifdef PBS
+        struct proc* highestPriority = 0;
+        int dynamicPriority = 101, processDynamicPriority = 0;
+        int tmp;
+        for(p = proc; p < &proc[NPROC]; p++) {
+          acquire(&p->lock);
+          tmp = p->priority - p->nice + 5;
+          tmp = (tmp > 100) ? 100 : tmp;
+          processDynamicPriority = (tmp < 0) ? 0 : tmp;
+          if(p->state == RUNNABLE)
+            if (highestPriority == 0 || dynamicPriority 
+            > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs >    p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time < p->create_time))) )       
+            {
+                if (highestPriority)
+                    release(&highestPriority->lock);
+
+                highestPriority = p;
+                dynamicPriority = processDynamicPriority;
+                continue;
+            }
+          release(&p->lock);
+        }
+        if (highestPriority)
+        {
+            /*acquire(&highestPriority->lock);*/
+            highestPriority->state = RUNNING;
+            highestPriority->no_of_runs++;
+            highestPriority->start_time = ticks;
+            highestPriority->run_time = 0;
+            highestPriority->sleep_time = 0;
+            c->proc = highestPriority;
+            swtch(&c->context, &highestPriority->context);
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            p->nice = ((p->sleep_time) * 10 ) / (p->sleep_time + p->run_time);
+            c->proc = 0;
+            release(&highestPriority->lock);
+        }
+        #endif
+    ```
+
+    We follow the steps to calculate niceness of a process after its run as told by the pdf. 
+
+-   The required attributes are initialized in `allocprop` in proc.c
+
+    ```c
+    p->priority = 60;
+    p->nice = 5;
+    p->sleep_time = 0;
+    p->run_time = 0;
+    ```
+
+-   Based on the current state of the process, the `run_time` and `sleep_time` are incremented in `update_runtime()` in `proc.c`
+
+    ```c
+    void
+    update_runtime(void) 
+    {
+        for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+            acquire(&p->lock);
+            if (p->state == RUNNING) {
+                p->run_time++;
+                p->total_run_time++;
+            }
+            else if (p->state == SLEEPING) {
+                p->sleep_time++;
+            }
+            release(&p->lock);
+        }
+    }
+    ```
+
+-   Added system call `set_priority()` in `sysproc.c` similar to spec 1. The user program that calls it, `setpriority`, is also added
+
+    `setpriority.c`
+
+    ```c
+    #include "kernel/types.h"
+    #include "kernel/stat.h"
+    #include "kernel/param.h"
+    #include "user/user.h"
+    #include "kernel/fs.h"
+    #include "kernel/fcntl.h"
+
+    int
+    main(int argc, char *argv[])
+    {
+        #ifdef PBS
+        if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
+            fprintf(2, "Usage: %s command\n", argv[0]);
+            exit(1);
+        }
+
+        int temp = set_priority(atoi(argv[1]), atoi(argv[2]));
+
+        if (temp < 0) {
+            fprintf(2, "%s: set_priority failed\n", argv[0]);
+            exit(1);
+        }
+        else if (temp == 101) {
+            fprintf(2, "%s: pid %s not found\n", argv[2]);
+            exit(1);
+        }
+        #endif
+        exit(0);
+    }
+    ```
+
+    `sysproc.c`
+
+    ```c
+    uint64
+    sys_set_priority()
+    {
+        int priority, pid, oldpriority = 101;
+        if(argint(0, &priority) < 0)
+            return -1;
+        if(argint(1, &pid) < 0)
+            return -1;
+        for(struct proc *p = proc; p < &proc[NPROC]; p++)
+        {
+            acquire(&p->lock);
+            if(p->pid == pid && priority >= 0 && priority <= 100)
+            {
+                p->run_time = 0;
+                p->sleep_time = 0;
+                oldpriority = p->priority;
+                p->priority = priority;
+            }
+            release(&p->lock);
+        }
+        if(oldpriority > priority)
+        yield();
+        return oldpriority;
+    }
+    ```
+
+#### MLFQ
+
+-   Since a process is allowed to rejoin its current queue by voluntarily relinquishing control of the CPU by temporarily leaving the queue. It can remain in a high-priority queue by voluntarily relinquishing control of the CPU before its time slice expires.
+-   By doing so, the process will remain in a higher-priority queue, and thus have benefits from the higher-priority queue. Thus the process effectively exploits how MLFQ works
+
+### Spec 3
+
+-   Added an attribute `total_run_time` to `struct proc` in `proc.h` which calculates the total running time for the process
+-   Added a variable called `end_time` to `struct proc` in `proc.h` which is given a value once it becomes a zombie process
+-   Added a variable called `create_time` to `struct proc` in `proc.h` which holds the time of process birth
+-   Added a variable called `no_of_runs` to `struct proc` in `proc.h` which holds the number of times the process has run
+
+-   The procdump for each scheduling is separated and individual
+
+    ```c
+    #ifdef PBS
+    printf("\nPID\tPriority\tState\trtime\twtime\tnrun\n");
+    for(p = proc; p < &proc[NPROC]; p++){
+        if(p->state == UNUSED)
+            continue;
+        if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+            state = states[p->state];
+        else
+            state = "???";
+        printf("%d\t%d\t%s\t%d\t%d\t%d", p->pid, p->priority, state, p->total_run_time, ticks - p->create_time -      p->total_run_time, p->no_of_runs);
+        printf("\n");
+    }
+    #endif
+
+    #ifdef MLFQ
+    printf("\nPID\tPriority\tState\trtime\twtime\tnrun\tq0\tq1\tq2\tq3\tq4\n");
+    for(p = proc; p < &proc[NPROC]; p++){
+        if(p->state == UNUSED)
+            continue;
+        if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+            state = states[p->state];
+        else
+            state = "???";
+        printf("%d\t%d\t%s\t%d\t%d\t%d", p->pid, p->priority, state, p->total_run_time, ticks - p->create_time -      p->total_run_time, p->no_of_runs, p->ticks_in_q[0], p->ticks_in_q[1], p->ticks_in_q[2], p->ticks_in_q[3],     p->ticks_in_q[4]);
+        printf("\n");
+    }
+    #endif
+    ```
+
+### Benchmark
+
+Ran on a 2CPUs on a dual core machine with a 2.7GHz processor and a 16GB memory.
+
+-   **Benchmarks on Round Robin**: Average rtime 18, wtime 133
+-   **Benchmarks on FCFS**: Average rtime 42, wtime 87
+-   **Benchmarks on PBS**: Average rtime 22, wtime 118
+
+Below is the original README of the xv6-riscv project which these modifications are based on
+
+---
+
+---
+
 xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
-Version 6 (v6).  xv6 loosely follows the structure and style of v6,
+Version 6 (v6). xv6 loosely follows the structure and style of v6,
 but is implemented for a modern RISC-V multiprocessor using ANSI C.
 
 ACKNOWLEDGMENTS
