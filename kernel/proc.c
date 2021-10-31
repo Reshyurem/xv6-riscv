@@ -120,6 +120,7 @@ found:
   p->pid = allocpid();
   p->state = USED;
   p->priority = 60;
+  p->nice = 5;
   p->no_of_runs = 0;
   p->create_time = ticks;
   p->start_time = ticks;
@@ -380,6 +381,7 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+  p->end_time = ticks;
 
   release(&wait_lock);
 
@@ -444,6 +446,10 @@ update_runtime(void)
     acquire(&p->lock);
     if (p->state == RUNNING) {
       p->run_time++;
+      p->total_run_time++;
+    }
+    if (p->state == SLEEPING) {
+      p->sleep_time++;
     }
     release(&p->lock);
   }
@@ -517,23 +523,14 @@ scheduler(void)
     #ifdef PBS
     struct proc* highestPriority = 0;
     int dynamicPriority = 101, processDynamicPriority = 0;
-    int nice;
     int tmp;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->no_of_runs == 0)
-      {
-        processDynamicPriority = p->priority;
-      }
-      else
-      {
-        nice = ((p->create_time - p->start_time - p->run_time) * 10 ) / (p->create_time - p->start_time);
-        tmp = p->priority - nice + 5;
-        tmp = (tmp > 100) ? 100 : tmp;
-        processDynamicPriority = (tmp < 0) ? 0 : tmp;
-      }
+      tmp = p->priority - p->nice + 5;
+      tmp = (tmp > 100) ? 100 : tmp;
+      processDynamicPriority = (tmp < 0) ? 0 : tmp;
       if(p->state == RUNNABLE)
-        if (highestPriority == 0 || dynamicPriority > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs > p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time > p->create_time))))       
+        if (highestPriority == 0 || dynamicPriority > processDynamicPriority || (dynamicPriority == processDynamicPriority && (highestPriority->no_of_runs > p->no_of_runs || (highestPriority->no_of_runs == p->no_of_runs && highestPriority->create_time < p->create_time))))       
         {
             if (highestPriority)
                 release(&highestPriority->lock);
@@ -551,10 +548,12 @@ scheduler(void)
         highestPriority->no_of_runs++;
         highestPriority->start_time = ticks;
         highestPriority->run_time = 0;
+        highestPriority->sleep_time = 0;
         c->proc = highestPriority;
         swtch(&c->context, &highestPriority->context);
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        p->nice = ((p->create_time - p->start_time - p->run_time) * 10 ) / (p->create_time - p->start_time);
         c->proc = 0;
         release(&highestPriority->lock);
     }
@@ -643,8 +642,13 @@ sleep(void *chan, struct spinlock *lk)
   p->chan = chan;
   p->state = SLEEPING;
 
+  int before = ticks;
+
   sched();
 
+  int after = ticks;
+
+  p->sleep_time += after - before;
   // Tidy up.
   p->chan = 0;
 
@@ -741,7 +745,7 @@ procdump(void)
   struct proc *p;
   char *state;
 
-  // #ifdef RR
+  #if defined RR || FCFS
   printf("\n");
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
@@ -753,19 +757,68 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
-  // #endif
+  #endif
 
-  // #ifdef PBS
-  // printf("\nPID\tPriority\tState\trtime\twtime\tnrun\n");
-  // for(p = proc; p < &proc[NPROC]; p++){
-  //   if(p->state == UNUSED)
-  //     continue;
-  //   if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
-  //     state = states[p->state];
-  //   else
-  //     state = "???";
-  //   printf("%d\t%d\t%s", p->pid, p->priority, state, ticks - p->create_time, p->wait_time, p->no_of_runs);
-  //   printf("\n");
-  // }
-  // #endif
+  #ifdef PBS
+  printf("\nPID\tPriority\tState\trtime\twtime\tnrun\n");
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state == UNUSED)
+      continue;
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+      state = states[p->state];
+    else
+      state = "???";
+    printf("%d\t%d\t%s\t%d\t%d\t%d", p->pid, p->priority, state, p->total_run_time, ticks - p->create_time - p->total_run_time, p->no_of_runs);
+    printf("\n");
+  }
+  #endif
+}
+
+int
+waitx(uint64 addr, uint* rtime, uint* wtime)
+{
+  struct proc *np;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for(;;){
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for(np = proc; np < &proc[NPROC]; np++){
+      if(np->parent == p){
+        // make sure the child isn't still in exit() or swtch().
+        acquire(&np->lock);
+
+        havekids = 1;
+        if(np->state == ZOMBIE){
+          // Found one.
+          pid = np->pid;
+          *rtime = np->total_run_time;
+          *wtime = np->end_time - np->create_time - np->total_run_time;
+          if(addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate,
+                                  sizeof(np->xstate)) < 0) {
+            release(&np->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          freeproc(np);
+          release(&np->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&np->lock);
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if(!havekids || p->killed){
+      release(&wait_lock);
+      return -1;
+    }
+    
+    // Wait for a child to exit.
+    sleep(p, &wait_lock);  //DOC: wait-sleep
+  }
 }

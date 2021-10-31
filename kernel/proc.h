@@ -111,9 +111,13 @@ struct proc {
   uint64 create_time;
   
   // PBS
+  uint64 nice;
   uint64 priority;
   uint64 run_time;
+  uint64 total_run_time;
+  uint64 sleep_time;
   uint64 start_time;
+  uint64 end_time;
   uint64 no_of_runs;
 };
 
