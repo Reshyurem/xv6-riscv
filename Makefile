@@ -124,7 +124,6 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_strace\
 	$U/_setpriority\
-	$U/_schedulertest\
 	$U/_cat\
 	$U/_echo\
 	$U/_forktest\
@@ -141,6 +140,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_schedulertest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

@@ -119,6 +119,32 @@ struct proc {
   uint64 start_time;
   uint64 end_time;
   uint64 no_of_runs;
+
+  // MLFQ
+  uint64 level;
+  uint64 in_queue;
+  uint64 change_queue;
+  uint64 n_run;
+  uint64 q_enter;
+  uint64 ticks_in_q[NO_OF_Q];
 };
 
 extern struct proc proc[NPROC];
+
+struct Queue {
+  int head, tail;
+  struct proc *array[NPROC + 1];
+  int size;
+};
+
+void push(struct Queue *list, struct proc *element);
+
+void pop(struct Queue *list);
+
+extern struct proc *front(struct Queue *list);
+
+void qerase(struct Queue *list, int pid);
+
+extern struct Queue mlfq[NO_OF_Q];
+
+void ageing(void);

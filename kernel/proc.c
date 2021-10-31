@@ -123,12 +123,18 @@ found:
   p->nice = 5;
   p->no_of_runs = 0;
   p->create_time = ticks;
+  p->end_time = 0;
   p->start_time = ticks;
+  p->total_run_time = 0;
+  p->sleep_time = 0;
+  p->run_time = 0;
+  #ifdef MLFQ
+  p->curr_queue = 0;
+  for (int i = 0; i < NO_OF_Q; i++)
+      p->ticks_in_q[i] = 0;
+  #endif
 
   // Allocate a trapframe page.
-  #ifdef FCFS
-  p->create_time = ticks;
-  #endif
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
@@ -448,7 +454,7 @@ update_runtime(void)
       p->run_time++;
       p->total_run_time++;
     }
-    if (p->state == SLEEPING) {
+    else if (p->state == SLEEPING) {
       p->sleep_time++;
     }
     release(&p->lock);
@@ -772,6 +778,20 @@ procdump(void)
     printf("\n");
   }
   #endif
+
+  #ifdef MLFQ
+  printf("\nPID\tPriority\tState\trtime\twtime\tnrun\tq0\tq1\tq2\tq3\tq4\n");
+  for(p = proc; p < &proc[NPROC]; p++){
+    if(p->state == UNUSED)
+      continue;
+    if(p->state >= 0 && p->state < NELEM(states) && states[p->state])
+      state = states[p->state];
+    else
+      state = "???";
+    printf("%d\t%d\t%s\t%d\t%d\t%d", p->pid, p->priority, state, p->total_run_time, ticks - p->create_time - p->total_run_time, p->no_of_runs, p->ticks_in_q[0], p->ticks_in_q[1], p->ticks_in_q[2], p->ticks_in_q[3], p->ticks_in_q[4]);
+    printf("\n");
+  }
+  #endif
 }
 
 int
@@ -795,7 +815,10 @@ waitx(uint64 addr, uint* rtime, uint* wtime)
         if(np->state == ZOMBIE){
           // Found one.
           pid = np->pid;
+          // printf("rt:%d\tst%d\twt:\ttrt:%d\tct:%d\tet:%d\n", np->run_time, np->sleep_time, np->end_time - np->create_time - np->total_run_time, np->total_run_time, np->create_time, np->end_time);
+          // *rtime = np->end_time;
           *rtime = np->total_run_time;
+          // *wtime = np->total_run_time;
           *wtime = np->end_time - np->create_time - np->total_run_time;
           if(addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate,
                                   sizeof(np->xstate)) < 0) {
@@ -817,8 +840,122 @@ waitx(uint64 addr, uint* rtime, uint* wtime)
       release(&wait_lock);
       return -1;
     }
-    
+
     // Wait for a child to exit.
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
+
+#ifdef MLFQ
+
+void pushback(Queue *q, struct proc *p)
+{
+    if (!q)
+        panic("Invalid Queue given!\n");
+    if (!p)
+        panic("Invalid Process given!\n");
+
+    if (size(q) == NUMQUEUE) 
+        panic("The Queue is full!\n")
+
+     if (q->beg > 0)
+        for (int i = q->beg; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
+            if (q->q[i] != NULL && q->q[i]->pid == p->pid)
+                return;
+    
+    if (q->beg == -1)
+    {
+        q->q[0] = p;
+        q->beg = q->end = 0;
+    }
+    else if (q->end == NUMQUEUE - 1 && q->beg != 0)
+    {
+        q->end = 0;
+        q->q[0] = p;
+    }
+    else
+    {
+        q->end++;
+        q->q[q->end] = p;
+    }
+}
+
+void deletefront(Queue *q)
+{
+    if (!q)
+        panic("Invalid Queue given!\n");
+
+    if (q->beg == -1)
+        panic("Deleting from empty queue!\n");
+
+    if (q->beg == q->end)
+        q->end = q->beg = -1;
+    else if (q->beg == NUMQUEUE - 1)
+        q->beg = 0;
+    else
+        q->beg++;
+}
+
+void deleteIdx(Queue *q, int idx)
+{
+    if (idx < q->beg || idx > q->end)
+        panic("Invalid idx!\n");
+
+    for (int i = idx; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
+       q->q[i] = q->q[(j + 1) % NUMQUEUE];
+
+    if (q->beg == q->end)
+        q->beg = q->end = -1;
+    else if (q->end == 0 && q->beg > q->end)
+        q->end = NUMQUEUE - 1;
+    else
+        q->end--;
+}
+
+int size(Queue *q)
+{
+    if (q == NULL)
+        panic("Invalid Queue given!\n");
+
+    if (q->beg == -1)
+        return 0;
+    
+    if (q->end >= q->beg)
+        return q->end - q->beg + 1;
+
+    return NUMQUEUE + q->end - q->beg;
+}
+
+void 
+ageproc(void)
+{
+    for (int que = 0; que < MAXQUEUE; que++)
+    {
+        if (size(&mlfq[que]))
+        {
+            Queue *q = &mlfq[que];
+            
+            for (int i = q->beg; i != (q->end + 1) % NUMQUEUE; i++, i %= NUMQUEUE)
+            {
+                if (q->q[i] && ticks - q->reset_ticks > AGE)
+                {
+                    if (q->q[i]->queue < 0)
+                        continue;
+                    int newQ = q->q[i]->queue - 1;
+                    if (newQ < 0)
+                        newQ = 0;
+
+                    struct proc *del = mlfq[q->q[i]->queue].q[i];
+                    deleteIdx(&mlfq[q->q[i]->queue], i);
+
+                    del->reset_ticks = ticks;
+                    del->queue = newQ;
+
+                    pushback(&mlfq[newQ], del);
+                }
+            }
+        }
+    }
+}
+
+#endif

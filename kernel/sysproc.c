@@ -134,7 +134,7 @@ sys_set_priority()
 }
 
 uint64
-sys_waitx()
+sys_waitx(void)
 {
   uint64 addr, addr1, addr2;
   uint wtime, rtime;
@@ -144,7 +144,7 @@ sys_waitx()
     return -1;
   if(argaddr(2, &addr2) < 0)
     return -1;
-  int ret = sys_waitx(addr, &wtime, &rtime);
+  int ret = waitx(addr, &wtime, &rtime);
   struct proc* p = myproc();
   if (copyout(p->pagetable, addr1,(char*)&wtime, sizeof(int)) < 0)
     return -1;
